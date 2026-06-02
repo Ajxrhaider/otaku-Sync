@@ -4,24 +4,41 @@ import { Pool } from "@neondatabase/serverless";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+// Helper for CORS headers
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+// Handle browser pre-flight requests (Required for browser extensions)
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
+    
+    // Auth Check
     if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized" }, 
+        { status: 401, headers: corsHeaders }
+      );
     }
 
-    // e.g., sourcePlatform: 'mal', sourceId: 16498, episode: 5
     const body = await request.json();
-    const { sourcePlatform, sourceId, episode, status = "CURRENT" } = body;
+    const { sourcePlatform, sourceId, episode } = body;
 
+    // Validate Input
     if (!sourcePlatform || !sourceId || typeof episode !== 'number') {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Missing required fields" }, 
+        { status: 400, headers: corsHeaders }
+      );
     }
 
-    // 1. Map the source ID to the AniList ID
-    // Note: In production, validate sourcePlatform to prevent SQL injection. 
-    // We expect 'mal', 'anidb', 'kitsu', etc.
     const platformColumn = `${sourcePlatform}_id`; 
     
     const mappingResult = await pool.query(
@@ -30,24 +47,30 @@ export async function POST(request: NextRequest) {
     );
 
     if (mappingResult.rows.length === 0 || !mappingResult.rows[0].anilist_id) {
-      return NextResponse.json({ error: "Anime not found in mapping database" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Anime not found in mapping database" }, 
+        { status: 404, headers: corsHeaders }
+      );
     }
 
     const anilistId = mappingResult.rows[0].anilist_id;
 
-    // 2. Get the user's AniList Access Token
+    // Get Token
     const tokenResult = await pool.query(
       `SELECT access_token FROM tracker_credentials WHERE "userId" = $1 AND platform = 'anilist'`,
       [session.user.id]
     );
 
     if (tokenResult.rows.length === 0) {
-      return NextResponse.json({ error: "AniList account not connected" }, { status: 403 });
+      return NextResponse.json(
+        { error: "AniList account not connected" }, 
+        { status: 403, headers: corsHeaders }
+      );
     }
 
     const accessToken = tokenResult.rows[0].access_token;
 
-    // 3. Mutate AniList via GraphQL
+    // GraphQL Mutation
     const anilistMutation = `
       mutation ($mediaId: Int, $progress: Int, $status: MediaListStatus) {
         SaveMediaListEntry (mediaId: $mediaId, progress: $progress, status: $status) {
@@ -67,28 +90,21 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         query: anilistMutation,
-        variables: {
-          mediaId: anilistId,
-          progress: episode,
-          status: status
-        }
+        variables: { mediaId: anilistId, progress: episode, status: "CURRENT" }
       }),
     });
 
     const anilistData = await anilistResponse.json();
 
-    if (anilistData.errors) {
-      throw new Error(anilistData.errors[0].message);
-    }
-
-    return NextResponse.json({ 
-      success: true, 
-      message: "Synced to AniList", 
-      data: anilistData.data.SaveMediaListEntry 
-    });
+    return NextResponse.json(
+      { success: true, data: anilistData.data }, 
+      { status: 200, headers: corsHeaders }
+    );
 
   } catch (error: any) {
-    console.error("Sync Webhook Error:", error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { error: error.message }, 
+      { status: 500, headers: corsHeaders }
+    );
   }
 }
