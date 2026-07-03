@@ -1,0 +1,172 @@
+datasource db {
+  provider = "postgresql"
+  // url line removed entirely!
+}
+
+generator client {
+  provider = "prisma-client-js"
+  // REMOVE any custom 'output' line here if you have one
+}
+
+// ... keep your models (User, Profile, etc.) exactly as they were below
+
+// =========================================================================
+// 1. AUTH.JS CORE SCHEMA (For Google Login & Platform Management)
+// =========================================================================
+
+model User {
+  id            String             @id @default(cuid())
+  name          String?
+  email         String?            @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  
+  // NextAuth OAuth accounts (e.g., Google authentication entry)
+  accounts      Account[]
+  sessions      Session[]
+  
+  // Otaku Sync custom relations
+  profile       UserProfile?
+  credentials   TrackerCredential[]
+  syncActivities SyncActivity[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =========================================================================
+// 2. OTAKU SYNC USER PROFILE & TRACKER CREDENTIALS
+// =========================================================================
+
+model UserProfile {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  themePreference String  @default("dark")
+  primaryTracker  String   @default("anilist") // Fallback source of truth for display
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model TrackerCredential {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // 'myanimelist', 'anilist', 'kitsu', 'simkl', 'shikimori', 'mangaupdates', etc.
+  platform        String    
+  trackerUsername String    // The username on the target platform
+  access_token    String    @db.Text
+  refresh_token   String?   @db.Text
+  expires_at      DateTime? // Essential for refreshing MAL/Simkl tokens automatically
+  sync_enabled    Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // A user can only link ONE account per platform
+
+  @@unique([userId, platform])
+  @@index([platform])
+}
+
+// =========================================================================
+// 3. THE "ROSETTA STONE" MASTER MEDIA MAPPINGS
+// =========================================================================
+
+model AnimeMapping {
+  id              String   @id @default(cuid())
+  titleRomaji     String
+  titleEnglish    String?
+  titleJapanese   String?
+  
+  // Unique target platform IDs (Nullable because not all entries exist on all databases)
+  anilistId       Int?     @unique
+  malId           Int?     @unique
+  kitsuId         Int?     @unique
+  simklId         Int?     @unique
+  shikimoriId     Int?     @unique
+  anidbId         Int?     @unique
+  animeplanetId   String?  @unique // Some platforms use string slugs
+  anisearchId     Int?     @unique
+  livechartId     Int?     @unique
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Compound indices to perform blazingly fast lookups by text name matching if IDs aren't available yet
+  @@index([titleRomaji])
+  @@index([titleEnglish])
+}
+
+model MangaMapping {
+  id              String   @id @default(cuid())
+  titleRomaji     String
+  titleEnglish    String?
+  titleJapanese   String?
+  
+  // Unique target tracking databases for manga
+  anilistId       Int?     @unique
+  malId           Int?     @unique
+  kitsuId         Int?     @unique
+  mangaupdatesId  Int?     @unique
+  mangabakaId     String?  @unique
+  animeplanetId   String?  @unique
+  shikimoriId     Int?     @unique
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([titleRomaji])
+  @@index([titleEnglish])
+}
+
+model SyncActivity {
+  id           String   @id @default(cuid())
+  userId       String
+  title        String   // Anime title (e.g., "Jujutsu Kaisen")
+  platform     String   // "myanimelist" or "anilist"
+  action       String   // "PUSHED_UPDATE" or "FAILED_UPDATE"
+  fromEpisode  Int
+  toEpisode    Int
+  createdAt    DateTime @default(now())
+
+  // Relationship back to your main user table
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
